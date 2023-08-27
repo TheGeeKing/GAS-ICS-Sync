@@ -22,9 +22,9 @@
 */
 
 var sourceCalendars = [                // The ics/ical urls that you want to get events from along with their target calendars (list a new row for each mapping of ICS url to Google Calendar)
-                                       // For instance: ["https://p24-calendars.icloud.com/holidays/us_en.ics", "US Holidays"]
-                                       // Or with colors following mapping https://developers.google.com/apps-script/reference/calendar/event-color,
-                                       // for instance: ["https://p24-calendars.icloud.com/holidays/us_en.ics", "US Holidays", "11"]
+  // For instance: ["https://p24-calendars.icloud.com/holidays/us_en.ics", "US Holidays"]
+  // Or with colors following mapping https://developers.google.com/apps-script/reference/calendar/event-color,
+  // for instance: ["https://p24-calendars.icloud.com/holidays/us_en.ics", "US Holidays", "11"]
   ["icsUrl1", "targetCalendar1"],
   ["icsUrl2", "targetCalendar2"],
   ["icsUrl3", "targetCalendar1"]
@@ -46,6 +46,8 @@ var defaultAllDayReminder = -1;           // Default reminder for all day events
                                           // See https://github.com/derekantrican/GAS-ICS-Sync/issues/75 for why this is neccessary.
 var overrideVisibility = "";              // Changes the visibility of the event ("default", "public", "private", "confidential"). Anything else will revert to the class value of the ICAL event.
 var addTasks = false;
+var ignoreModifiedProperty = [] // Some ICS providers doesn't follow RFC 5545 and change some properties when fetching the ICS file. This option allows to ignore those properties when comparing events. It fixes false positive of event being modified. You can use ["last-modified", "sequence", "description"] to bypass most issues.
+                                          // See https://github.com/derekantrican/GAS-ICS-Sync/issues/150 for why it might be needed.
 
 var emailSummary = false;                 // Will email you when an event is added/modified/removed to your calendar
 var email = "";                           // OPTIONAL: If "emailSummary" is set to true or you want to receive update notifications, you will need to provide your email address
@@ -97,7 +99,7 @@ var email = "";                           // OPTIONAL: If "emailSummary" is set 
 
 var defaultMaxRetries = 10; // Maximum number of retries for api functions (with exponential backoff)
 
-function install(){
+function install() {
   //Delete any already existing triggers so we don't create excessive triggers
   deleteAllTriggers();
 
@@ -109,7 +111,7 @@ function install(){
   ScriptApp.newTrigger("checkForUpdate").timeBased().everyDays(1).create();
 }
 
-function uninstall(){
+function uninstall() {
   deleteAllTriggers();
 }
 
@@ -129,7 +131,7 @@ var addedEvents = [];
 var modifiedEvents = [];
 var removedEvents = [];
 
-function startSync(){
+function startSync() {
   if (PropertiesService.getUserProperties().getProperty('LastRun') > 0 && (new Date().getTime() - PropertiesService.getUserProperties().getProperty('LastRun')) < 360000) {
     Logger.log("Another iteration is currently running! Exiting...");
     return;
@@ -144,7 +146,7 @@ function startSync(){
   emailSummary = emailSummary && email != "";
 
   sourceCalendars = condenseCalendarMap(sourceCalendars);
-  for (var calendar of sourceCalendars){
+  for (var calendar of sourceCalendars) {
     //------------------------ Reset globals ------------------------
     calendarEvents = [];
     calendarEventsIds = [];
@@ -166,24 +168,24 @@ function startSync(){
     Logger.log("Working on calendar: " + targetCalendarId);
 
     //------------------------ Parse existing events --------------------------
-    if(addEventsToCalendar || modifyExistingEvents || removeEventsFromCalendar){
+    if (addEventsToCalendar || modifyExistingEvents || removeEventsFromCalendar) {
       var eventList =
-        callWithBackoff(function(){
-            return Calendar.Events.list(targetCalendarId, {showDeleted: false, privateExtendedProperty: "fromGAS=true", maxResults: 2500});
+        callWithBackoff(function () {
+          return Calendar.Events.list(targetCalendarId, { showDeleted: false, privateExtendedProperty: "fromGAS=true", maxResults: 2500 });
         }, defaultMaxRetries);
       calendarEvents = [].concat(calendarEvents, eventList.items);
       //loop until we received all events
-      while(typeof eventList.nextPageToken !== 'undefined'){
-        eventList = callWithBackoff(function(){
-          return Calendar.Events.list(targetCalendarId, {showDeleted: false, privateExtendedProperty: "fromGAS=true", maxResults: 2500, pageToken: eventList.nextPageToken});
+      while (typeof eventList.nextPageToken !== 'undefined') {
+        eventList = callWithBackoff(function () {
+          return Calendar.Events.list(targetCalendarId, { showDeleted: false, privateExtendedProperty: "fromGAS=true", maxResults: 2500, pageToken: eventList.nextPageToken });
         }, defaultMaxRetries);
 
         if (eventList != null)
           calendarEvents = [].concat(calendarEvents, eventList.items);
       }
       Logger.log("Fetched " + calendarEvents.length + " existing events from " + targetCalendarName);
-      for (var i = 0; i < calendarEvents.length; i++){
-        if (calendarEvents[i].extendedProperties != null){
+      for (var i = 0; i < calendarEvents.length; i++) {
+        if (calendarEvents[i].extendedProperties != null) {
           calendarEventsIds[i] = calendarEvents[i].extendedProperties.private["rec-id"] || calendarEvents[i].extendedProperties.private["id"];
           calendarEventsMD5s[i] = calendarEvents[i].extendedProperties.private["MD5"];
         }
@@ -195,14 +197,14 @@ function startSync(){
     }
 
     //------------------------ Process ical events ------------------------
-    if (addEventsToCalendar || modifyExistingEvents){
+    if (addEventsToCalendar || modifyExistingEvents) {
       Logger.log("Processing " + vevents.length + " events");
       var calendarTz =
-        callWithBackoff(function(){
+        callWithBackoff(function () {
           return Calendar.Settings.get("timezone").value;
         }, defaultMaxRetries);
 
-      vevents.forEach(function(e){
+      vevents.forEach(function (e) {
         processEvent(e, calendarTz);
       });
 
@@ -210,25 +212,25 @@ function startSync(){
     }
 
     //------------------------ Remove old events from calendar ------------------------
-    if(removeEventsFromCalendar){
+    if (removeEventsFromCalendar) {
       Logger.log("Checking " + calendarEvents.length + " events for removal");
       processEventCleanup();
       Logger.log("Done checking events for removal");
     }
 
     //------------------------ Process Tasks ------------------------
-    if (addTasks){
+    if (addTasks) {
       processTasks(responses);
     }
 
     //------------------------ Add Recurring Event Instances ------------------------
     Logger.log("Processing " + recurringEvents.length + " Recurrence Instances!");
-    for (var recEvent of recurringEvents){
+    for (var recEvent of recurringEvents) {
       processEventInstance(recEvent);
     }
   }
 
-  if ((addedEvents.length + modifiedEvents.length + removedEvents.length) > 0 && emailSummary){
+  if ((addedEvents.length + modifiedEvents.length + removedEvents.length) > 0 && emailSummary) {
     sendSummary();
   }
   Logger.log("Sync finished!");
